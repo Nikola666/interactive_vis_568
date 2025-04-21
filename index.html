@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Stock Market Chart, Histogram, Investor Age, Drawdown & Sharpe Ratio</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!-- Include jQuery and jQuery UI for slider controls -->
+  <link rel="stylesheet" href="//code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+  <script src="https://code.jquery.com/jquery-3.6.0.js"></script>
+  <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+    }
+    #controls { margin: 20px; }
+    .slider-container { margin-bottom: 10px; }
+    #content-wrapper {
+      display: flex;
+      max-width: 2000px;
+      margin: 0 auto;
+      gap: 20px;
+    }
+    #histogram { flex: 1; max-width: 33%; border: 1px solid #ccc; }
+    #chart { flex: 2; max-width: 66%; border: 1px solid #ccc; }
+    .axis path, .axis line { stroke: #ccc; }
+    .line-path { fill: none; stroke-width: 2px; }
+    .bar { fill: steelblue; }
+    .bar.combined { fill: gold; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div class="slider-container">
+      <label for="sliderSPY">SPY Weight: </label>
+      <input type="range" id="sliderSPY" min="0" max="100" value="50">
+      <span id="spyValue">50%</span>
+    </div>
+    <!-- Risk slider is automatically updated from Investor Age; disable manual input -->
+    <div class="slider-container">
+      <label for="sliderRisk">Risk Appetite (1-10): </label>
+      <input type="range" id="sliderRisk" min="1" max="10" value="5" disabled>
+      <span id="riskValue">5</span>
+    </div>
+    <div class="slider-container">
+      <label for="sliderAge">Investor Age: </label>
+      <input type="range" id="sliderAge" min="20" max="65" value="40">
+      <span id="ageValue">40</span>
+    </div>
+    <div class="slider-container">
+      <label id="maxDrawdownLabel">Maximum Drawdown: </label>
+      <span id="maxDrawdownValue">Calculating...</span>
+    </div>
+    <div id="weights">Weights: SPY: 0.50  BIL: 0.50</div>
+    <div id="sharpeValue">Adjusted Sharpe: Calculating...</div>
+  </div>
+  
+  <div id="content-wrapper">
+    <svg id="histogram" viewBox="0 0 600 250"></svg>
+    <svg id="chart" viewBox="0 0 1000 800"></svg>
+  </div>
+  
+  <script>
+    // --- Data Loader: Reads CSV data from "russ_bil.csv" ---
+    async function loadData() {
+      const data = await d3.csv("SPY_BIL.csv", row => ({
+        date: new Date(row.Date),
+        spy: +row.SPY,
+        bil: +row.BIL
+      }));
+      data.sort((a, b) => a.date - b.date);
+      return data;
+    }
+    
+    // --- Function to create the multiline chart ---
+    function createMultilineChart(data, svgSelector) {
+      const keys = ["spy", "bil"];
+      const margin = { top: 50, right: 150, bottom: 60, left: 80 };
+      const width = 1000 - margin.left - margin.right;
+      const height = 800 - margin.top - margin.bottom;
+      const svg = d3.select(svgSelector);
+      svg.selectAll("*").remove();
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+      
+      // Title
+      svg.append("text")
+         .attr("x", (width + margin.left + margin.right) / 2)
+         .attr("y", margin.top / 2)
+         .attr("text-anchor", "middle")
+         .style("font-family", "sans-serif")
+         .style("font-size", "24px")
+         .style("font-weight", "bold")
+         .text("Stock Market vs 1-3 Month Treasury Bill");
+      
+      const x = d3.scaleTime()
+                  .domain(d3.extent(data, d => d.date))
+                  .range([0, width]);
+      
+      const spyValues = data.map(d => d.spy).filter(v => !isNaN(v));
+      const bilValues = data.map(d => d.bil).filter(v => !isNaN(v));
+      const ySpy = d3.scaleLinear()
+                     .domain([d3.min(spyValues, d => d < 0 ? d : 0), d3.max(spyValues, d => d > 0 ? d : 0)])
+                     .range([height, 0])
+                     .nice();
+      const yBil = d3.scaleLinear()
+                     .domain([d3.min(bilValues, d => d < 0 ? d : 0), d3.max(bilValues, d => d > 0 ? d : 0)])
+                     .range([height, 0])
+                     .nice();
+      
+      g.append("g")
+       .attr("transform", `translate(0, ${height})`)
+       .call(d3.axisBottom(x).ticks(18))
+       .selectAll("text")
+       .style("text-anchor", "end")
+       .attr("transform", "rotate(-65)");
+      
+      g.append("g").call(d3.axisLeft(ySpy))
+       .append("text")
+         .attr("transform", "rotate(-90)")
+         .attr("y", -50)
+         .attr("x", -height / 2)
+         .attr("dy", "0.71em")
+         .style("text-anchor", "middle")
+         .text("SPY Monthly Return");
+      
+      g.append("g")
+       .attr("transform", `translate(${width}, 0)`)
+       .call(d3.axisRight(yBil))
+       .append("text")
+         .attr("transform", "rotate(-90)")
+         .attr("y", 50)
+         .attr("x", -height / 2)
+         .attr("dy", "0.71em")
+         .style("text-anchor", "middle")
+         .text("BIL Monthly Return");
+      
+      const color = d3.scaleOrdinal().domain(keys).range(d3.schemeSet1);
+      keys.forEach(key => {
+        const lineGen = d3.line()
+                          .x(d => x(d.date))
+                          .y(d => key === "spy" ? ySpy(d.spy) : yBil(d.bil))
+                          .defined(d => d.date && !isNaN(d[key]));
+        g.append("path")
+         .datum(data)
+         .attr("class", "line-path")
+         .attr("fill", "none")
+         .attr("stroke", color(key))
+         .attr("d", lineGen)
+         .style("opacity", 0)
+         .transition()
+         .duration(1000)
+         .style("opacity", 1);
+      });
+      
+      // Legends for SPY and BIL
+      const legend = g.selectAll(".legend")
+                      .data(keys)
+                      .enter().append("g")
+                      .attr("class", "legend");
+      
+      legend.filter(d => d === "spy")
+            .attr("transform", `translate(0, ${height + 40})`)
+            .append("text")
+            .attr("x", 5)
+            .attr("y", 6)
+            .style("font-family", "sans-serif")
+            .style("font-size", "14px")
+            .text("SPY")
+            .append("tspan")
+            .attr("dx", 5)
+            .style("fill", color("spy"))
+            .text("■");
+      
+      legend.filter(d => d === "bil")
+            .attr("transform", `translate(${width + 5}, ${height + 30})`)
+            .append("text")
+            .attr("x", 5)
+            .attr("y", 6)
+            .style("font-family", "sans-serif")
+            .style("font-size", "14px")
+            .text("BIL")
+            .append("tspan")
+            .attr("dx", 5)
+            .style("fill", color("bil"))
+            .text("■");
+    }
+
+    // --- Updated Histogram: Displays SPY, BIL weights, and fixed Combined (100%) in percent ---
+    function createHistogram(spyWeight) {
+      d3.select("#histogram").selectAll("*").remove();
+      const histSvg = d3.select("#histogram").append("g").attr("transform", "translate(50,20)");
+      histSvg.append("text")
+    .attr("x", 250)          // Position horizontally (center for a width of ~500)
+    .attr("y", -10)          // Position above the chart (adjust as needed)
+    .attr("text-anchor", "middle")
+    .style("font-family", "sans-serif")
+    .style("font-size", "16px")
+    .style("font-weight", "bold")
+    .text("Recommended Portfolio Weights Histogram");
+      const weightData = [
+        { ticker: "SPY", value: spyWeight * 100 },
+        { ticker: "BIL", value: (1 - spyWeight) * 100 },
+        { ticker: "COMBINED", value: 100 }
+      ];
+      
+      const xScale = d3.scaleBand()
+                       .domain(weightData.map(d => d.ticker))
+                       .range([0, 500])
+                       .padding(0.2);
+      const yScale = d3.scaleLinear().domain([0, 100]).range([200, 0]);
+      
+      histSvg.selectAll(".bar")
+             .data(weightData)
+             .enter().append("rect")
+             .attr("class", d => `bar ${d.ticker === "COMBINED" ? "combined" : ""}`)
+             .attr("x", d => xScale(d.ticker))
+             .attr("y", d => yScale(d.value))
+             .attr("width", xScale.bandwidth())
+             .attr("height", d => 200 - yScale(d.value));
+      
+      histSvg.append("g")
+             .attr("transform", "translate(0,200)")
+             .call(d3.axisBottom(xScale));
+      
+      histSvg.append("g")
+             .call(d3.axisLeft(yScale).ticks(10));
+    }
+
+    // --- Mapping Function: Convert investor age to risk appetite ---
+    function convertAgeToRisk(age) {
+      if (age <= 20) return 10;
+      if (age >= 60) return 1;
+      if (age === 25) return 9;
+      if (age === 30) return 8;
+      if (age === 35) return 7;
+      if (age === 40) return 6;
+      if (age === 45) return 5;
+      if (age === 50) return 4;
+      if (age === 55) return 3;
+      // Linear interpolation for other ages:
+      return Math.round(10 - ((age - 20) / 40) * 9);
+    }
+
+    // --- Update Function: Recalculate portfolio metrics, maximum drawdown, and Sharpe ratio; update histogram.
+    function updateWeights(data, returns, varSpy, varBil, covSpyBil) {
+      const spySliderVal = +d3.select("#sliderSPY").property("value");  // SPY slider value (0-100)
+      const spyWeight = spySliderVal / 100;
+      const bilWeight = 1 - spyWeight;
+      
+      // Determine risk appetite from investor age.
+      const investorAge = +d3.select("#sliderAge").property("value");
+      const riskVal = convertAgeToRisk(investorAge);
+      
+      // Compute portfolio metrics for Sharpe ratio.
+      const meanSpy = d3.mean(returns.spy);
+      const meanBil = d3.mean(returns.bil);
+      const adjustedPortfolioMean = spyWeight * meanSpy * riskVal + bilWeight * meanBil;
+      const portfolioVariance = (spyWeight ** 2) * varSpy +
+                                (bilWeight ** 2) * varBil +
+                                2 * spyWeight * bilWeight * covSpyBil;
+      const portfolioStdDev = Math.sqrt(portfolioVariance);
+      const adjustedPortfolioSharpe = portfolioStdDev !== 0 ? adjustedPortfolioMean / portfolioStdDev : 0;
+      
+      // Calculate maximum drawdown using: (SPY weight)*(-0.6) + (1 - SPY weight)
+      const maxDrawdown = -0.6 * spyWeight;
+      const recoverYears = Math.ceil(1/Math.log(1.07)*Math.log(1/(1+maxDrawdown)));
+      console.log (recoverYears);
+      // Update displayed values.
+      d3.select("#spyValue").text(`${spySliderVal}%`);
+      d3.select("#riskValue").text(riskVal);
+      d3.select("#ageValue").text(investorAge);
+      d3.select("#weights").text(`Weights: SPY: ${spyWeight.toFixed(2)}  BIL: ${bilWeight.toFixed(2)}`);
+      d3.select("#maxDrawdownValue").text(`Maximum Drawdown: ${(maxDrawdown * 100).toFixed(0)}% 
+      and recover your investment in ${recoverYears} years!!!`);
+      d3.select("#sharpeValue").text(`Adjusted Sharpe: ${adjustedPortfolioSharpe.toFixed(2)}`);
+      
+      // Update histogram: shows weight percentages.
+      createHistogram(spyWeight);
+    }
+
+    // --- Main Function: Load Data, Initialize Charts, and Set Up Slider Event Listeners ---
+    async function main() {
+      const data = await loadData();
+      let returns = { spy: [], bil: [] };
+      for (let i = 1; i < data.length; i++) {
+        returns.spy.push(data[i].spy - data[i - 1].spy);
+        returns.bil.push(data[i].bil - data[i - 1].bil);
+      }
+      const varSpy = d3.variance(returns.spy);
+      const varBil = d3.variance(returns.bil);
+      const covSpyBil = d3.mean(returns.spy.map((v, i) => v * returns.bil[i])) -
+                        (d3.mean(returns.spy) * d3.mean(returns.bil));
+      
+      // Draw initial multiline chart and update weights/histogram.
+      createMultilineChart(data, "#chart");
+      updateWeights(data, returns, varSpy, varBil, covSpyBil);
+      
+      // Synchronized slider for SPY Weight.
+      d3.select("#sliderSPY").on("input", function() {
+        const spyVal = +this.value;
+        // Use investor age to recalc risk appetite.
+        const investorAge = +d3.select("#sliderAge").property("value");
+        const riskVal = convertAgeToRisk(investorAge);
+        d3.select("#sliderRisk").property("value", riskVal);
+        d3.select("#spyValue").text(`${spyVal}%`);
+        d3.select("#riskValue").text(riskVal);
+        updateWeights(data, returns, varSpy, varBil, covSpyBil);
+      });
+      
+      // Investor Age slider event listener.
+      d3.select("#sliderAge").on("input", function() {
+        const ageVal = +this.value;
+        d3.select("#ageValue").text(ageVal);
+        const riskVal = convertAgeToRisk(ageVal);
+        d3.select("#sliderRisk").property("value", riskVal);
+        d3.select("#riskValue").text(riskVal);
+        // Optionally, adjust SPY slider based on risk: here, setting SPY = risk * 10.
+        const spyVal = riskVal * 10;
+        d3.select("#sliderSPY").property("value", spyVal);
+        d3.select("#spyValue").text(`${spyVal}%`);
+        updateWeights(data, returns, varSpy, varBil, covSpyBil);
+      });
+      
+      // Risk slider is disabled for manual input.
+    }
+    
+    main();
+  </script>
+</body>
+</html>
